@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Quality Check New Files",
+  "description": "Reviews new Python files to ensure they include type hints, docstrings, and follow project conventions",
+  "version": "1",
+  "when": {
+    "type": "fileCreated",
+    "patterns": [
+      "**/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Review this newly created Python file for: 1) Type hints on all function parameters and return types. 2) Module-level docstring explaining purpose. 3) Function/class docstrings. 4) Proper imports following project conventions. 5) No hardcoded secrets or configuration values. If any are missing, fix them immediately."
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "name": "DevSecOps Dependency Scan",
+  "description": "Runs dependency vulnerability scan after each task to catch insecure packages introduced during implementation",
+  "version": "1",
+  "when": {
+    "type": "postTaskExecution"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "python -m pip_audit --strict --progress-spinner off",
+    "timeout": 60
+  }
+}

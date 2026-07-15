@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Security Pattern Check",
+  "description": "Checks adapter files for security violations: no hardcoded secrets, no shell=True, no eval/exec, no string-interpolated commands",
+  "version": "1",
+  "when": {
+    "type": "preToolUse",
+    "toolTypes": [
+      "write"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Before writing this file, check for security violations: 1) No hardcoded API keys, tokens, passwords, or credentials (look for string literals that look like secrets). 2) No shell=True in subprocess calls. 3) No eval(), exec(), pickle.loads(), or __import__(). 4) No string interpolation in SQL or shell commands. 5) No os.system() calls. If any violations are found, fix them before proceeding."
+  }
+}

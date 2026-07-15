@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Type Check on Edit",
+  "description": "Runs mypy strict type checking on Python files after editing to catch type errors early",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/src/**/*.py"
+    ]
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "python -m mypy --strict --no-error-summary"
+  }
+}

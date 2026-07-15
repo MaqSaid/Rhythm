@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Run Tests on Source Edit",
+  "description": "Runs relevant pytest tests after a Python file is edited to catch regressions immediately",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/src/**/*.py"
+    ]
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "python -m pytest tests/ -x --timeout=30 -q"
+  }
+}

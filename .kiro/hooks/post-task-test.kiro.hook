@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Verify After Task",
+  "description": "After completing a spec task, runs the full test suite to ensure nothing is broken",
+  "version": "1",
+  "when": {
+    "type": "postTaskExecution"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "python -m pytest tests/ --timeout=60 -q"
+  }
+}

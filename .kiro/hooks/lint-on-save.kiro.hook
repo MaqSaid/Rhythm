@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Lint Python on Save",
+  "description": "Runs Ruff linter on saved Python files to enforce PEP 8 and coding standards immediately",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/*.py"
+    ]
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "python -m ruff check --fix"
+  }
+}

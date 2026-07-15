@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Architecture Guard",
+  "description": "Verifies that write operations follow project architecture patterns (hexagonal boundaries, correct file locations)",
+  "version": "1",
+  "when": {
+    "type": "preToolUse",
+    "toolTypes": [
+      "write"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Before writing this file, verify: 1) The file is in the correct layer per hexagonal architecture (ports in ports/, adapters in adapters/, domain in domain/). 2) No domain layer imports from adapters. 3) File follows the project's naming conventions. If any violations are detected, explain and suggest the correct approach."
+  }
+}
