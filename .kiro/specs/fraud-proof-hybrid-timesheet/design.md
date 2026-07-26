@@ -2,7 +2,11 @@
 
 ## Overview
 
-The Fraud-Proof Hybrid Timesheet system is a modular monolith architecture comprising two independently deployable units — a silent desktop **Tracker** and a web **Portal** — connected through a shared **Central Store** (Google Sheets). The system compares manual employee time claims against automatically captured hardware-level activity data to surface discrepancies for HR review.
+The Fraud-Proof Hybrid Timesheet system is a modular monolith architecture comprising two independently deployable units — a silent desktop **Tracker** and a web **Portal** — connected through a shared **Central Store** (Google Sheets). The system compares manual employee time claims against automatically captured hardware-level activity data to surface discrepancies for HR review on a configurable periodic basis (weekly/fortnightly/monthly).
+
+The system is designed with an employee-first philosophy: idle gaps under 30 minutes are auto-exempt (no notification), exception reporting is a one-click desktop toast (not a form), employees receive their own transparency report 24 hours before HR reviews go live, self-correction notifications allow fixing variances before flags appear, and a "Great Standing" badge rewards consistent timekeeping. Focus Mode lets employees suppress notifications during deep work without affecting tracking. Only binary active/idle status is stored — no app names, window titles, or URLs are ever recorded or exposed to HR.
+
+HR administrators use the same clock-in/out system as employees (with self-approval restrictions), can see a simple online/offline presence indicator (ephemeral, not stored), and review variance data aggregated per configurable review period — single bad days never trigger flags on their own.
 
 ### Key Design Decisions
 
@@ -21,6 +25,14 @@ The Fraud-Proof Hybrid Timesheet system is a modular monolith architecture compr
 | **Circuit Breaker** for external calls | Prevents cascade failures |
 | **Decorator Pattern** for cross-cutting concerns | Consistent auth/audit/logging |
 | **Template Method** for reports | Enforced security pipeline per report |
+| **Toast Notification** (not form) for exception reporting | One-click workflow; zero friction for short breaks |
+| **Auto-Exempt Threshold** (≤30 min idle) | Prevents notification fatigue for short breaks |
+| **Periodic Variance** (review period, not daily) | Prevents micro-management; catches sustained patterns only |
+| **Ephemeral Presence Indicator** (not stored) | Communication utility without surveillance creep |
+| **Employee Transparency Report** (24h before HR) | No surprises; builds trust; allows self-correction |
+| **Focus Mode** (private, not reported) | Respects deep work; notifications are productivity-aware |
+| **Work Schedule Patterns** (Standard/Split/Flexible/Custom) | Supports diverse work arrangements without false flags |
+| **Positive Reinforcement** (badge, not leaderboard) | Encourages without creating competition or pressure |
 
 ### High-Level System Diagram
 
@@ -34,23 +46,31 @@ graph TD
         SE[Sync Engine]
         NTP[NTP Validator]
         SL[Structured Logger]
+        TN[Toast Notification<br/>Idle Return + Categories]
+        FM[Focus Mode<br/>System Tray Toggle]
         AM --> LDB
         LD --> LDB
         HC --> LDB
         SE --> LDB
         NTP --> SE
         SL --> LDB
+        AM -->|idle return| TN
+        FM -->|suppresses| TN
+        TN -->|quick exception| LDB
     end
 
     subgraph "Hugging Face Spaces (Portal)"
         AUTH[Auth Module<br/>Magic Links]
-        EP[Employee Portal<br/>Clock/Exception]
-        HD[HR Dashboard<br/>Reconciliation]
-        RE[Reconciliation Engine]
+        EP[Employee Portal<br/>Clock/Exception/Wellness]
+        HD[HR Dashboard<br/>Reconciliation + Presence]
+        RE[Reconciliation Engine<br/>Per Review Period]
         GT[Gemini Tagger]
         RBAC[RBAC Engine]
         IV[Input Validator]
         CB[Circuit Breaker]
+        WS[Work Schedule]
+        WE[Wellness Engine<br/>Self-Correction + Badge]
+        TR[Transparency Reports]
         EP --> RE
         HD --> RE
         EP --> GT
@@ -59,6 +79,9 @@ graph TD
         HD --> IV
         CB --> GT
         CB --> AUTH
+        RE --> WS
+        WE --> RE
+        TR --> RE
     end
 
     subgraph "External Services"
@@ -74,6 +97,8 @@ graph TD
     HD -->|"Read"| CS
     GT -->|"Classify"| GEM
     AUTH -->|"Send Magic Link"| SMTP
+    WE -->|"Self-Correction Notification"| SMTP
+    TR -->|"Transparency Report"| SMTP
 ```
 ## Architecture
 
@@ -127,6 +152,7 @@ graph TD
         TL[Location Context]
         TS[Sync Context]
         TI[Integrity Context]
+        TN[Notification Context<br/>Toast + Focus Mode]
     end
     subgraph "Portal Domain"
         PA[Authentication Context]
@@ -136,19 +162,27 @@ graph TD
         PP[Reports Context]
         PB[RBAC Context]
         PL[Employee Lifecycle Context]
+        PS[Presence Context]
+        PW[Work Schedule Context]
+        PX[Employee Wellness Context]
     end
     subgraph "Shared Kernel"
         SK1[Employee Value Object]
         SK2[Tenant Config]
         SK3[Timestamp Utilities]
         SK4[Enums - Status, Location, Flags]
+        SK5[Work Schedule Definitions]
     end
     TS -->|reads| TA
     TS -->|reads| TL
     TI -->|verifies| TA
+    TN -->|triggered by| TA
     PR -->|reads| PC
     PR -->|reads| PE
+    PR -->|reads| PW
     PP -->|reads| PR
+    PX -->|reads| PR
+    PS -->|reads heartbeats| TS
     PA --> PB
     PC --> PA
     PE --> PA
@@ -159,6 +193,8 @@ graph TD
     PC -.-> SK1
     PR -.-> SK3
     TS -.-> SK3
+    PW -.-> SK5
+    PR -.-> SK5
 ```
 
 **Bounded Context Responsibilities:**
@@ -169,13 +205,17 @@ graph TD
 | Location | Tracker | Detect WiFi, match against office networks |
 | Sync | Tracker | Queue management, nightly push, heartbeat |
 | Integrity | Tracker | Hash chain computation and verification |
+| Notification | Tracker | Toast notifications for idle return (> Auto_Exempt_Threshold), focus mode suppression |
 | Authentication | Portal | Magic Links, sessions, token validation |
 | Clock | Portal | Clock-in/out, auto-close, session state |
-| Exception | Portal | Form submission, AI tagging, approval workflow |
-| Reconciliation | Portal | Variance calculation, location mismatch detection |
-| Reports | Portal | Template Method report generation, CSV export |
+| Exception | Portal | Quick toast exceptions + detailed Exception_Form, AI tagging, approval workflow |
+| Reconciliation | Portal | Periodic variance calculation (per configurable review period), location mismatch detection |
+| Reports | Portal | Template Method report generation, CSV export, Employee Transparency Reports |
 | RBAC | Portal | Roles, permissions, access enforcement |
 | Employee Lifecycle | Portal | Add/edit/deactivate employees, installer generation |
+| Presence | Portal | Real-time online/offline indicator for HR (ephemeral, not stored/logged) |
+| Work Schedule | Portal | Flexible work pattern management (Standard/Split/Flexible/Custom) |
+| Employee Wellness | Portal | Self-correction notifications, positive reinforcement badges |
 
 
 ### Design Patterns Applied
@@ -345,7 +385,9 @@ src/
 │   │   ├── location.py          # Location determination logic
 │   │   ├── sync.py              # Sync queue management
 │   │   ├── integrity.py         # Hash chain computation/verification
-│   │   ├── models.py            # LogEntry, WifiInfo, SyncBatch dataclasses
+│   │   ├── notification.py      # Toast notification logic + auto-exempt threshold
+│   │   ├── focus_mode.py        # Focus mode timer and suppression logic
+│   │   ├── models.py            # LogEntry, WifiInfo, SyncBatch, QuickException dataclasses
 │   │   └── enums.py             # Status, Location enums
 │   ├── ports/
 │   │   ├── input_monitor.py     # ActivityMonitorPort (Protocol)
@@ -353,6 +395,7 @@ src/
 │   │   ├── local_storage.py     # LocalStoragePort (Protocol)
 │   │   ├── remote_store.py      # RemoteStorePort (Protocol)
 │   │   ├── time_service.py      # TimeServicePort (Protocol)
+│   │   ├── notification.py      # ToastNotificationPort (Protocol)
 │   │   └── logger.py            # StructuredLoggerPort (Protocol)
 │   ├── adapters/
 │   │   ├── pynput_monitor.py    # pynput-based activity detection
@@ -361,24 +404,32 @@ src/
 │   │   ├── sqlite_storage.py    # SQLite WAL mode adapter
 │   │   ├── sheets_remote.py     # gspread Google Sheets adapter
 │   │   ├── ntp_time.py          # NTP UDP query adapter
+│   │   ├── toast_notification.py # OS-native toast notification adapter
+│   │   ├── system_tray.py       # System tray icon + Focus Mode toggle adapter
 │   │   └── json_logger.py       # Structured JSON file logger
 │   ├── services/
 │   │   ├── tracker_service.py   # Main orchestrator (5-min loop)
 │   │   ├── sync_service.py      # Nightly sync + heartbeat
+│   │   ├── notification_service.py # Idle return toast + auto-exempt logic
+│   │   ├── focus_mode_service.py   # Focus mode timer management
 │   │   └── startup_service.py   # Service registration, chain verify
 │   └── main.py                  # Entry point, DI wiring
 ├── portal/
 │   ├── domain/
 │   │   ├── auth.py              # Session, MagicLink logic
 │   │   ├── clock.py             # Clock-in/out, auto-close logic
-│   │   ├── exception.py         # Exception submission, approval
-│   │   ├── reconciliation.py    # Variance calc, location mismatch
+│   │   ├── exception.py         # Exception submission (quick + detailed), approval
+│   │   ├── reconciliation.py    # Periodic variance calc (per review period), location mismatch
 │   │   ├── reports.py           # Report generators (Template Method)
+│   │   ├── transparency.py      # Employee Transparency Report generation
 │   │   ├── rbac.py              # Roles, permissions, enforcement
 │   │   ├── employee.py          # Employee lifecycle (add/edit/deactivate)
+│   │   ├── work_schedule.py     # Flexible work pattern definitions + validation
+│   │   ├── presence.py          # Ephemeral online/offline presence logic
+│   │   ├── wellness.py          # Self-correction notifications + positive reinforcement
 │   │   ├── incident.py          # Security incident management
 │   │   ├── models.py            # All Pydantic models
-│   │   └── enums.py             # Roles, Permissions, FlagColor enums
+│   │   └── enums.py             # Roles, Permissions, FlagColor, WorkPatternType enums
 │   ├── ports/
 │   │   ├── employee_store.py    # EmployeeStorePort (Protocol)
 │   │   ├── clock_store.py       # ClockStorePort (Protocol)
@@ -387,6 +438,7 @@ src/
 │   │   ├── audit_store.py       # AuditStorePort (Protocol)
 │   │   ├── ai_classifier.py     # AIClassifierPort (Protocol)
 │   │   ├── email_sender.py      # EmailSenderPort (Protocol)
+│   │   ├── notification.py      # EmployeeNotificationPort (Protocol)
 │   │   ├── config_store.py      # ConfigStorePort (Protocol)
 │   │   └── cache.py             # CachePort (Protocol)
 │   ├── adapters/
@@ -403,17 +455,28 @@ src/
 │   │   ├── auth_service.py      # Login, session management
 │   │   ├── clock_service.py     # Clock-in/out orchestration
 │   │   ├── exception_service.py # Exception submission + tagging
-│   │   ├── reconciliation_service.py
+│   │   ├── reconciliation_service.py  # Periodic variance calculation
 │   │   ├── report_service.py    # Report generation orchestration
+│   │   ├── transparency_service.py   # Employee Transparency Report delivery
 │   │   ├── employee_service.py  # Employee CRUD
 │   │   ├── rbac_service.py      # Permission checks
+│   │   ├── presence_service.py  # Ephemeral presence indicator computation
+│   │   ├── work_schedule_service.py  # Work schedule CRUD + validation
+│   │   ├── wellness_service.py  # Self-correction + positive reinforcement
 │   │   ├── incident_service.py  # Incident detection + notification
 │   │   └── config_service.py    # Tenant parameter management
 │   ├── views/
-│   │   ├── employee_portal.py   # Gradio UI - employee views
-│   │   ├── hr_dashboard.py      # Gradio UI - HR views
+│   │   ├── employee_portal.py   # Gradio UI - employee views + My Timesheet
+│   │   ├── hr_dashboard.py      # Gradio UI - HR views + presence indicators
 │   │   ├── report_views.py      # Gradio UI - report views
 │   │   └── admin_settings.py    # Gradio UI - config/settings
+│   ├── copy/
+│   │   ├── __init__.py          # CopyManager: loads and renders templates
+│   │   ├── en.copy.yaml         # English copy resource (tone + messaging)
+│   │   ├── tone_guidelines.md   # Editorial voice documentation
+│   │   └── templates/           # Category-specific copy templates
+│   ├── static/
+│   │   └── rhythm.css           # Custom CSS: animations, reduced-motion, high-contrast
 │   ├── middleware/
 │   │   ├── decorators.py        # Auth, audit, sanitize decorators
 │   │   ├── rate_limiter.py      # Rate limiting logic
@@ -423,12 +486,24 @@ src/
 │   ├── value_objects.py         # EmployeeID, TenantID, Timestamp
 │   ├── config.py                # Externalized configuration loader
 │   ├── enums.py                 # Shared enums across contexts
-│   └── time_utils.py            # UTC conversion, boundary alignment
+│   ├── work_schedule.py         # Work schedule pattern definitions
+│   └── time_utils.py            # UTC conversion, boundary alignment, review period calculation
+├── scripts/
+│   ├── seed_data.py             # CLI entry point for data seeding
+│   └── seed/
+│       ├── __init__.py
+│       ├── personas.py          # 10 employee persona definitions
+│       ├── activity_generator.py # 4-week activity log generation
+│       ├── clock_generator.py   # Clock-in/out entry generation
+│       ├── exception_generator.py # Exception record generation
+│       ├── audit_generator.py   # Realistic audit log generation
+│       └── fixture_exporter.py  # JSON fixture export
 └── tests/
     ├── unit/                    # pytest unit tests
     ├── property/                # Hypothesis property tests
     ├── integration/             # External service tests
-    ├── e2e/                     # Playwright end-to-end tests
+    ├── e2e/                     # Playwright end-to-end tests (+ axe-core accessibility)
+    ├── fixtures/                # JSON fixtures from seed data for offline testing
     ├── architecture/            # import-linter boundary tests
     └── security/                # Security-specific tests
 ```
@@ -889,7 +964,8 @@ graph LR
 |-------|------------|--------|
 | `ClockInEvent` | AuditLogger, CacheInvalidator | Log audit entry; invalidate reconciliation cache |
 | `ClockOutEvent` | AuditLogger, CacheInvalidator | Log audit entry; invalidate reconciliation cache |
-| `ExceptionSubmittedEvent` | AuditLogger, GeminiTagger | Log audit entry; trigger AI classification |
+| `ExceptionSubmittedEvent` | AuditLogger, GeminiTagger | Log audit entry; trigger AI classification (detailed form only) |
+| `QuickExceptionRecordedEvent` | AuditLogger, CacheInvalidator | Log toast-based exception; invalidate variance cache |
 | `ExceptionApprovedEvent` | AuditLogger, CacheInvalidator | Log audit entry; invalidate variance cache |
 | `IntegrityViolationReceivedEvent` | IncidentNotifier, AuditLogger | Create incident; notify HR admins via email |
 | `ClockDriftReceivedEvent` | IncidentNotifier, AuditLogger | Create incident (High severity) |
@@ -900,6 +976,9 @@ graph LR
 | `RolAssignmentChangedEvent` | AuditLogger | Log role change |
 | `LoginFailedEvent` | IncidentDetector | Check if > 5 failures from same IP in 1h -> create incident |
 | `RateLimitViolationEvent` | IncidentDetector, AuditLogger | Check if > 3 violations from same IP in 1h -> create incident |
+| `ReviewPeriodCompletedEvent` | TransparencyReportGenerator, WellnessService | Generate Transparency Report; update consecutive clean count; check badge |
+| `ReviewPeriod75PercentEvent` | SelfCorrectionNotifier | Check running variance; send notification if threshold exceeded |
+| `WorkScheduleChangedEvent` | AuditLogger, CacheInvalidator | Log change; invalidate reconciliation cache |
 
 #### Tracker: Timer-Based (Not Event-Driven)
 
@@ -1113,11 +1192,30 @@ class WifiDetectionPort(Protocol):
     """Port for OS-specific WiFi network detection."""
     def get_current_network(self) -> Optional[WifiInfo]: ...
 
+class ToastNotificationPort(Protocol):
+    """Port for displaying OS-native toast notifications on idle return."""
+    def show_idle_return_toast(
+        self, idle_duration: timedelta, categories: list[str]
+    ) -> Optional[str]: ...
+    """Shows toast with idle duration and category buttons.
+    Returns selected category or None if dismissed/timed out."""
+    def is_suppressed(self) -> bool: ...
+    """Returns True if Focus Mode is active (notifications suppressed)."""
+
+class FocusModePort(Protocol):
+    """Port for Focus Mode system tray toggle."""
+    def activate(self, duration_hours: int) -> None: ...
+    def deactivate(self) -> None: ...
+    def is_active(self) -> bool: ...
+    def remaining_minutes(self) -> int: ...
+
 class LocalStoragePort(Protocol):
     """Port for local data persistence (SQLite)."""
     def insert_log_entry(self, entry: LogEntry) -> bool: ...
+    def insert_quick_exception(self, exception: QuickException) -> bool: ...
     def get_entries_for_date(self, target_date: date) -> list[LogEntry]: ...
     def get_sync_queue(self) -> list[LogEntry]: ...
+    def get_exception_sync_queue(self) -> list[QuickException]: ...
     def mark_synced(self, entry_ids: list[str]) -> None: ...
     def get_queue_oldest_date(self) -> Optional[date]: ...
     def get_last_valid_hash(self) -> Optional[str]: ...
@@ -1125,6 +1223,7 @@ class LocalStoragePort(Protocol):
 class RemoteStorePort(Protocol):
     """Port for Central Store communication."""
     def push_sync_batch(self, entries: list[LogEntry]) -> bool: ...
+    def push_exceptions(self, exceptions: list[QuickException]) -> bool: ...
     def send_heartbeat(self, employee_id: str, timestamp: datetime) -> bool: ...
 
 class TimeServicePort(Protocol):
@@ -1157,7 +1256,8 @@ class ExceptionStorePort(Protocol):
     def get_pending(self, tenant_id: str) -> list[ExceptionRecord]: ...
     def update_status(self, record_id: str, status: str, reason: Optional[str]) -> None: ...
     def update_tag(self, record_id: str, tag: str) -> None: ...
-    def get_approved_for_date(self, employee_id: str, d: date) -> list[ExceptionRecord]: ...
+    def get_approved_for_period(self, employee_id: str, start: date, end: date) -> list[ExceptionRecord]: ...
+    def get_by_submitter(self, employee_id: str) -> list[ExceptionRecord]: ...
 
 class AIClassifierPort(Protocol):
     """Port for AI-powered text classification."""
@@ -1167,6 +1267,32 @@ class EmailSenderPort(Protocol):
     """Port for email delivery."""
     def send_magic_link(self, email: str, token: str, expiry_minutes: int) -> bool: ...
     def send_incident_notification(self, emails: list[str], incident: Incident) -> bool: ...
+    def send_self_correction_notification(self, email: str, message: str) -> bool: ...
+    def send_transparency_report(self, email: str, report: TransparencyReport) -> bool: ...
+
+class EmployeeNotificationPort(Protocol):
+    """Port for in-app employee notifications (Portal inbox)."""
+    def send(self, employee_id: str, message: str, link: Optional[str] = None) -> None: ...
+    def get_unread(self, employee_id: str) -> list[Notification]: ...
+
+class WorkScheduleStorePort(Protocol):
+    """Repository for work schedule patterns."""
+    def get_schedule(self, employee_id: str, effective_date: date) -> WorkSchedulePattern: ...
+    def update_schedule(self, employee_id: str, pattern: WorkSchedulePattern) -> None: ...
+    def get_default(self, tenant_id: str) -> WorkSchedulePattern: ...
+
+class PresencePort(Protocol):
+    """Port for ephemeral presence calculation (NOT stored)."""
+    def get_presence(self, employee_id: str) -> bool: ...
+    """Returns True if last heartbeat/activity within 10 min. Ephemeral only."""
+
+class WellnessStorePort(Protocol):
+    """Repository for employee wellness state (badges, notification tracking)."""
+    def get_consecutive_clean_periods(self, employee_id: str) -> int: ...
+    def increment_clean_periods(self, employee_id: str) -> None: ...
+    def reset_clean_periods(self, employee_id: str) -> None: ...
+    def has_sent_self_correction(self, employee_id: str, period_start: date) -> bool: ...
+    def mark_self_correction_sent(self, employee_id: str, period_start: date) -> None: ...
 
 class AuditStorePort(Protocol):
     """Port for append-only audit log."""
@@ -1187,7 +1313,7 @@ class CachePort(Protocol):
 
 ```python
 class TrackerService:
-    """Orchestrates the 5-minute logging cycle."""
+    """Orchestrates the 5-minute logging cycle with notification and focus mode support."""
     
     def __init__(
         self,
@@ -1195,6 +1321,8 @@ class TrackerService:
         location_detector: WifiDetectionPort,
         local_storage: LocalStoragePort,
         hash_chain: HashChainManager,
+        toast_notification: ToastNotificationPort,
+        focus_mode: FocusModePort,
         logger: StructuredLoggerPort,
         config: TrackerConfig,
     ): ...
@@ -1203,9 +1331,14 @@ class TrackerService:
         """Execute one 5-minute logging cycle:
         1. Check activity since last boundary
         2. Determine status (Online/Idle based on idle_threshold)
-        3. Detect location
-        4. Compute hash (chain with previous)
-        5. Write to Local_DB (retry up to 3x on failure)
+        3. If resuming from idle:
+           a. Calculate idle duration
+           b. If idle_duration <= auto_exempt_threshold: treat as normal (no notification)
+           c. If idle_duration > auto_exempt_threshold AND focus_mode inactive: show toast
+           d. If idle_duration > auto_exempt_threshold AND focus_mode active: record Unmarked Idle
+        4. Detect location
+        5. Compute hash (chain with previous)
+        6. Write to Local_DB (retry up to 3x on failure)
         """
     
     def get_next_boundary(self, now: datetime) -> datetime:
@@ -1216,22 +1349,32 @@ class TrackerService:
 
 ```python
 class ReconciliationService:
-    """Calculates variance and detects location mismatches."""
+    """Calculates variance per configurable review period and detects location mismatches."""
     
     def __init__(
         self,
         clock_store: ClockStorePort,
         activity_store: ActivityStorePort,
         exception_store: ExceptionStorePort,
+        work_schedule_store: WorkScheduleStorePort,
         cache: CachePort,
+        config: TenantConfig,
     ): ...
     
     @require_auth
     @require_permission(Permission.VIEW_ALL_EMPLOYEE_DATA)
     @audit_log("view_reconciliation")
-    def calculate_variance(self, employee_id: str, target_date: date) -> VarianceResult:
-        """Variance = Manual Claimed - (Tracked Active + Approved Exceptions).
-        Returns flag: RED (< -1.0), AMBER (> +1.0), GREEN (in range)."""
+    def calculate_period_variance(self, employee_id: str, review_period: ReviewPeriod) -> PeriodVarianceResult:
+        """Variance per review period = Manual Claimed - (Tracked Active + Approved Exceptions + Auto-Exempt Idle).
+        Only counts idle within declared work schedule blocks.
+        Returns flag: RED (< -threshold), AMBER (> +threshold), GREEN (in range).
+        Threshold defaults to 3.0h/week, scaled proportionally for other periods.
+        Single bad days do NOT trigger flags — only sustained patterns across the full period."""
+    
+    @require_auth
+    @require_permission(Permission.VIEW_ALL_EMPLOYEE_DATA)
+    def get_daily_breakdown(self, employee_id: str, review_period: ReviewPeriod) -> list[DailyVarianceDetail]:
+        """Drill-down view: per-day detail within a review period."""
     
     @require_auth
     @require_permission(Permission.VIEW_ALL_EMPLOYEE_DATA)
@@ -1317,9 +1460,26 @@ class WorkSchedule(str, Enum):
     HYBRID = "hybrid"
     REMOTE = "remote"
 
+class WorkPatternType(str, Enum):
+    STANDARD = "standard"       # Single continuous block (e.g., 09:00-17:00)
+    SPLIT = "split"             # Two blocks (e.g., 06:00-12:00 and 18:00-21:00)
+    FLEXIBLE = "flexible"       # No fixed hours — any activity within the day counts
+    CUSTOM = "custom"           # Up to 3 configurable time blocks per day
+
 class EmployeeStatus(str, Enum):
     ACTIVE = "active"
     INACTIVE = "inactive"
+
+@dataclass(frozen=True)
+class TimeBlock:
+    start: time                       # e.g., time(9, 0) for 09:00
+    end: time                         # e.g., time(17, 0) for 17:00
+
+@dataclass
+class WorkSchedulePattern:
+    pattern_type: WorkPatternType
+    blocks: list[TimeBlock]           # 1 block for Standard, 2 for Split, up to 3 for Custom
+    effective_from: date              # Changes take effect from this date
 
 @dataclass
 class Employee:
@@ -1329,11 +1489,13 @@ class Employee:
     email: str                        # Company email (RFC 5322)
     role_ids: list[str]               # Assigned role IDs
     timezone: str                     # IANA identifier (e.g., "Australia/Sydney")
-    work_schedule: WorkSchedule
+    work_schedule: WorkSchedule       # office/hybrid/remote
+    work_pattern: WorkSchedulePattern # Declares working hours pattern
     status: EmployeeStatus
     locale: str = "en"                # Preferred locale
     created_at: datetime = None
     deactivated_at: Optional[datetime] = None
+    consecutive_clean_periods: int = 0  # Count for "Great Standing" badge
 ```
 
 #### ClockEntry (Portal Domain)
@@ -1359,6 +1521,10 @@ class ExceptionCategory(str, Enum):
     HARDWARE_ISSUE = "Hardware Issue"
     PERSONAL_LEAVE = "Personal Leave"
 
+class ExceptionSource(str, Enum):
+    TOAST_QUICK = "toast_quick"       # One-click from desktop toast notification
+    DETAILED_FORM = "detailed_form"   # Full Exception_Form in Portal
+
 class ApprovalStatus(str, Enum):
     PENDING = "Pending"
     APPROVED = "Approved"
@@ -1370,10 +1536,11 @@ class ExceptionRecord:
     tenant_id: str
     employee_id: str
     date: date
-    category: ExceptionCategory       # User-selected
-    ai_tag: str                       # Gemini-classified or "Unclassified"
-    duration_minutes: int             # 5-480, increments of 5
-    comment: str                      # 10-500 characters
+    category: ExceptionCategory       # User-selected (from toast or form)
+    source: ExceptionSource           # How the exception was submitted
+    ai_tag: str                       # Gemini-classified or "Unclassified" (only for detailed form)
+    duration_minutes: int             # Auto-calculated from idle period (toast) or 5-480 (form)
+    comment: str                      # Empty for toast; 10-500 characters for detailed form
     submitted_at: datetime            # UTC
     status: ApprovalStatus = ApprovalStatus.PENDING
     hr_override_tag: Optional[str] = None
@@ -1408,21 +1575,47 @@ class MagicLink:
 #### Reconciliation Models
 ```python
 class FlagColor(str, Enum):
-    RED = "red"           # Variance < -1.0
-    AMBER = "amber"       # Variance > +1.0
-    GREEN = "green"       # -1.0 <= variance <= +1.0
+    RED = "red"           # Variance < -threshold per review period
+    AMBER = "amber"       # Variance > +threshold per review period
+    GREEN = "green"       # Within threshold range per review period
+
+class ReviewPeriodType(str, Enum):
+    WEEKLY = "weekly"
+    FORTNIGHTLY = "fortnightly"
+    MONTHLY = "monthly"
 
 @dataclass(frozen=True)
-class VarianceResult:
+class ReviewPeriod:
+    period_type: ReviewPeriodType
+    start_date: date
+    end_date: date
+    tenant_id: str
+
+@dataclass(frozen=True)
+class PeriodVarianceResult:
     employee_id: str
-    date: date
-    manual_hours: float              # From clock entries
-    tracked_hours: float             # From activity log (Online entries * 5min)
+    review_period: ReviewPeriod
+    manual_hours: float              # From clock entries across the period
+    tracked_hours: float             # From activity log (Online entries * 5min) within work schedule
     exception_hours: float           # From approved exceptions only
-    variance: float                  # round(manual - (tracked + exception), 1)
+    auto_exempt_hours: float         # Idle periods <= Auto_Exempt_Threshold (not counted against employee)
+    unmarked_idle_hours: float       # Idle > threshold, no exception marked
+    variance: float                  # round(manual - (tracked + exception + auto_exempt), 1)
     flag: FlagColor
-    flag_label: Optional[str]        # "Potential timesheet padding" | "Unclaimed hours"
-    data_complete: bool              # False if tracker or clock data missing
+    flag_label: Optional[str]        # "Potential timesheet padding" | "Unclaimed hours detected"
+    data_complete: bool              # False if data missing for >50% of expected working days
+    threshold_used: float            # The variance flag threshold that was applied
+
+@dataclass(frozen=True)
+class DailyVarianceDetail:
+    """Drill-down detail for a single day within a review period."""
+    date: date
+    manual_hours: float
+    tracked_hours: float
+    exception_hours: float
+    auto_exempt_hours: float
+    variance: float
+    # No flag per day — flags are period-level only
 
 @dataclass(frozen=True)
 class LocationCheckResult:
@@ -1505,13 +1698,20 @@ class Incident:
 class TenantConfig:
     tenant_id: str
     idle_threshold_minutes: int = 10          # Range: 5-60
-    variance_flag_threshold: float = 1.0      # Range: 0.5-4.0
+    auto_exempt_threshold_minutes: int = 30   # Range: 15-120 (idle <= this is auto-exempt, no notification)
+    review_period: str = "weekly"             # "weekly" | "fortnightly" | "monthly"
+    variance_flag_threshold: float = 3.0      # Range: 1.0-10.0 hours per review period (per week)
     auto_clock_out_time: str = "23:00"        # Range: 20:00-23:59
     heartbeat_interval_minutes: int = 30      # Range: 15-120
     magic_link_expiry_minutes: int = 10       # Range: 5-30
     session_timeout_minutes: int = 30         # Range: 15-120
     data_retention_days: int = 180
     surveillance_notice_period_days: int = 14
+    self_correction_notification_enabled: bool = True   # R53: notify employee at 75% through period
+    transparency_report_enabled: bool = True            # R57: end-of-period report to employee
+    transparency_report_lead_hours: int = 24            # Hours before HR review goes live
+    default_work_pattern: str = "standard"              # Default for new employees
+    positive_reinforcement_threshold: int = 3           # Consecutive clean periods for badge
 
 @dataclass
 class WhiteLabelConfig:
@@ -1575,10 +1775,10 @@ CREATE INDEX idx_sync_queue_created ON sync_queue(created_at);
 
 | Sheet Name | Columns |
 |-----------|---------|
-| `employees` | tenant_id, employee_id, full_name, email, role_ids, timezone, work_schedule, status, locale, created_at, deactivated_at |
+| `employees` | tenant_id, employee_id, full_name, email, role_ids, timezone, work_schedule, work_pattern_type, work_pattern_blocks, status, locale, created_at, deactivated_at, consecutive_clean_periods |
 | `activity_log` | tenant_id, employee_id, date, timestamp, status, location, integrity_flag, time_drift_flag, synced_at |
 | `clock_entries` | tenant_id, employee_id, clock_in_time, clock_out_time, declared_location, auto_closed, date, idempotency_key |
-| `exceptions` | tenant_id, employee_id, date, category, ai_tag, duration_minutes, comment, submitted_at, status, hr_override_tag, rejection_reason, approved_by, idempotency_key |
+| `exceptions` | tenant_id, employee_id, date, category, source, ai_tag, duration_minutes, comment, submitted_at, status, hr_override_tag, rejection_reason, approved_by, idempotency_key |
 | `heartbeats` | tenant_id, employee_id, timestamp |
 | `sessions` | tenant_id, session_id, employee_id, email, created_at, last_activity, is_active |
 | `magic_links` | tenant_id, token, email, created_at, expires_at, used |
@@ -1588,6 +1788,652 @@ CREATE INDEX idx_sync_queue_created ON sync_queue(created_at);
 | `config` | tenant_id, key, value, updated_by, updated_at, previous_value |
 | `surveillance_notices` | tenant_id, version, content, effective_date, issued_at |
 | `notice_acknowledgements` | tenant_id, employee_id, notice_version, acknowledged_at |
+| `work_schedules` | tenant_id, employee_id, pattern_type, blocks_json, effective_from, updated_at |
+| `transparency_reports` | tenant_id, employee_id, review_period_start, review_period_end, delivered_at, content_json |
+| `self_correction_notifications` | tenant_id, employee_id, review_period_start, sent_at, running_variance |
+
+
+## Visual Design System (Rhythm Brand Identity)
+
+### Design Philosophy
+
+The Rhythm visual identity is intentionally warm, organic, and human — designed to feel like a wellness tool rather than surveillance software. Every visual decision prioritizes employee comfort: rounded corners reduce visual tension, the sage-and-amber palette evokes nature rather than corporate coldness, and generous whitespace creates breathing room.
+
+### Color Palette
+
+| Token | Hex | Usage |
+|-------|-----|-------|
+| `--rhythm-primary` | `#5B8C5A` | Sage green — primary actions, badges, active states |
+| `--rhythm-secondary` | `#E8A838` | Warm amber — secondary actions, highlights, warnings |
+| `--rhythm-background` | `#FAFAF7` | Soft off-white — page background, card backgrounds |
+| `--rhythm-text` | `#2D3436` | Dark charcoal — body text, headings |
+| `--rhythm-accent` | `#E17055` | Soft coral — destructive actions, error states, attention |
+
+**High-Contrast Mode Overrides** (detected via `prefers-contrast: more`):
+| Token | High-Contrast Value |
+|-------|-------------------|
+| `--rhythm-primary` | `#3D6B3A` (darker green, 7:1 ratio) |
+| `--rhythm-secondary` | `#B87E1A` (darker amber) |
+| `--rhythm-background` | `#FFFFFF` (pure white) |
+| `--rhythm-text` | `#000000` (pure black) |
+| `--rhythm-accent` | `#C0392B` (deeper red, 4.5:1 ratio) |
+
+### Typography
+
+| Role | Font | Weight | Size |
+|------|------|--------|------|
+| Headings (H1-H3) | Nunito | 700 (Bold) | 28px / 24px / 20px |
+| Body text | Inter | 400 (Regular) | 16px |
+| UI labels / buttons | Inter | 500 (Medium) | 14px (minimum) |
+| Legal fine print | Inter | 400 | 12px (minimum, only for legal) |
+| Captions / secondary | Inter | 400 | 14px |
+
+**Font loading strategy**: `font-display: swap` to prevent invisible text during load.
+
+### Spacing System (8px Grid)
+
+All spacing values are multiples of 8px:
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--space-xs` | 4px | Icon margins (exception to 8px grid) |
+| `--space-sm` | 8px | Tight element gaps, inline spacing |
+| `--space-md` | 16px | Standard component padding |
+| `--space-lg` | 24px | Section gaps, card padding |
+| `--space-xl` | 32px | Page section separators |
+| `--space-2xl` | 48px | Major layout breaks |
+
+### Border Radius and Shape
+
+| Element | Radius |
+|---------|--------|
+| Cards | 8px |
+| Buttons | 8px |
+| Input fields | 8px |
+| Modals | 12px |
+| Badges/chips | 16px (pill) |
+| Avatars | 50% (circle) |
+
+### Micro-Animations
+
+All animations are capped at **300ms** maximum duration and respect `prefers-reduced-motion`:
+
+```css
+/* Animation tokens */
+:root {
+  --duration-instant: 100ms;
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;  /* maximum allowed */
+  --ease-out: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* Reduced motion override */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0ms !important;
+    transition-duration: 0ms !important;
+  }
+}
+```
+
+| Interaction | Duration | Easing |
+|-------------|----------|--------|
+| Button hover/focus | 100ms | ease-out |
+| Clock-in confirmation | 200ms | ease-out (subtle pulse) |
+| Toast appearance | 200ms | ease-out (slide in) |
+| Page transitions | 150ms | ease-out (fade) |
+| Form submission feedback | 200ms | ease-out |
+
+### Gradio Theming and CSS Strategy
+
+The Portal runs on Gradio, which provides a `gr.themes.Base` class for custom theming. The Rhythm design system is applied through:
+
+**1. Custom Gradio Theme Class:**
+```python
+import gradio as gr
+
+class RhythmTheme(gr.themes.Base):
+    def __init__(self):
+        super().__init__(
+            primary_hue=gr.themes.Color(
+                c50="#f0f7f0", c100="#d4e8d4", c200="#b8d9b8",
+                c300="#8cbf8c", c400="#6ba66b", c500="#5B8C5A",
+                c600="#4a7349", c700="#3a5a39", c800="#2a4129", c900="#1a2819"
+            ),
+            secondary_hue=gr.themes.Color(
+                c50="#fef9f0", c100="#fcecd4", c200="#f9deb8",
+                c300="#f5c88c", c400="#f0b260", c500="#E8A838",
+                c600="#c48e2e", c700="#9f7324", c800="#7a581a", c900="#553d10"
+            ),
+            neutral_hue=gr.themes.Color(
+                c50="#FAFAF7", c100="#f0f0ed", c200="#e0e0dd",
+                c300="#c0c0bd", c400="#8a8a87", c500="#5f5f5c",
+                c600="#454543", c700="#2D3436", c800="#1a1c1d", c900="#0d0e0f"
+            ),
+            font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
+            font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "monospace"],
+        )
+        self.set(
+            body_background_fill="#FAFAF7",
+            body_text_color="#2D3436",
+            button_primary_background_fill="#5B8C5A",
+            button_primary_text_color="#FFFFFF",
+            button_secondary_background_fill="#E8A838",
+            block_radius="8px",
+            input_radius="8px",
+            button_large_radius="8px",
+            spacing_lg="24px",
+            spacing_md="16px",
+            spacing_sm="8px",
+        )
+```
+
+**2. Custom CSS Overrides** (injected via `gr.Blocks(css=...)`):
+
+The custom CSS file (`src/portal/static/rhythm.css`) handles:
+- `prefers-reduced-motion` media query disabling all animations
+- `prefers-contrast: more` media query applying high-contrast token overrides
+- 8px grid enforcement for all margin/padding
+- Focus indicator styling (2px solid outline, 3:1 contrast)
+- Minimum touch target sizing (44x44px on mobile)
+- Custom scrollbar styling consistent with Rhythm palette
+
+**3. Component-Level Styling:**
+
+Each Gradio component gets Rhythm styling via `elem_classes` and the theme:
+```python
+gr.Button("Clock In", variant="primary", elem_classes=["rhythm-action-btn"])
+gr.Textbox(label="Notes", elem_classes=["rhythm-input"])
+```
+
+
+## Copywriting Architecture
+
+### Overview
+
+All user-facing text is externalized into a dedicated copy resource system, separate from locale/translation files. This allows the UX writing team to iterate on tone and messaging without touching code, and keeps the warm, human voice consistent across the entire application.
+
+### File Structure
+
+```
+src/portal/
+├── copy/
+│   ├── __init__.py              # CopyManager: loads and renders templates
+│   ├── en.copy.yaml             # English copy resource file (source of truth)
+│   ├── tone_guidelines.md       # Editorial voice and tone documentation
+│   └── templates/
+│       ├── greetings.yaml       # Welcome messages, clock-in/out confirmations
+│       ├── errors.yaml          # Error messages (empathy-first pattern)
+│       ├── warnings.yaml        # Warning/heads-up messages
+│       ├── empty_states.yaml    # Encouragement for empty views
+│       ├── notifications.yaml   # Self-correction, transparency report, toast
+│       ├── privacy.yaml         # Privacy notice and surveillance disclosure
+│       └── hr_neutral.yaml      # HR dashboard factual language
+├── locales/
+│   ├── en.yaml                  # Structural translations (labels, nav, dates)
+│   ├── ar.yaml                  # Arabic translations
+│   └── ...                      # Other locale files
+```
+
+### Separation of Concerns: Copy vs. Locale
+
+| Concern | File | Purpose | Who Edits |
+|---------|------|---------|-----------|
+| **Tone & messaging** | `copy/en.copy.yaml` | Human-readable messages, warmth, personality | UX Writer |
+| **Structural labels** | `locales/en.yaml` | Navigation items, form labels, table headers | Translator |
+| **Templates with variables** | `copy/templates/*.yaml` | Message templates with `{first_name}` placeholders | UX Writer |
+
+This separation means a translator can localize labels without needing to understand the tone guidelines, and a UX writer can refine messaging without touching navigation structure.
+
+### Copy Resource File Format
+
+```yaml
+# copy/en.copy.yaml
+greetings:
+  home_welcome: "Welcome back, {first_name}"
+  clock_in_success: "You're clocked in. Have a great day!"
+  clock_out_success: "You're off the clock. See you next time!"
+  exception_submitted: "Exception logged, thanks for letting us know."
+  exception_approved: "Good news — your exception was approved."
+
+errors:
+  generic_500: "Something went wrong on our end. Your data is safe — try again in a moment."
+  session_expired: "Your session timed out. Let's get you back in."
+  validation_failed: "A few things need fixing before we can save this."
+  network_error: "We're having trouble connecting. Your data is safe locally — we'll sync when we can."
+
+warnings:
+  variance_employee: "Just a heads-up — your tracked hours are a bit below your claimed hours this week. Might want to mark any breaks you forgot."
+  self_correction: "Hey {first_name}, you're a bit behind on tracked vs. claimed hours this period. No worries — you can log an exception to catch up."
+  approaching_auto_close: "Still clocked in? We'll auto-close your session at {auto_close_time} if you forget."
+
+empty_states:
+  no_exceptions: "No exceptions this period — looks like smooth sailing!"
+  no_flags: "All clear. Nice work, {first_name}."
+  no_audit_results: "Nothing to show for those filters. Try widening your date range."
+  no_notifications: "All quiet today. Enjoy your focus time."
+
+notifications:
+  self_correction_subject: "Quick check-in on your timesheet"
+  transparency_report_subject: "Your timesheet summary for {period_label}"
+  toast_idle_return: "Welcome back! What were you up to for the last {idle_minutes} minutes?"
+
+hr_neutral:
+  variance_detected: "Variance detected for review"
+  flag_red: "Hours claimed exceed tracked + exceptions"
+  flag_amber: "Tracked hours exceed claimed hours"
+  location_mismatch: "Location mismatch detected"
+  integrity_violation: "Data integrity flag"
+
+privacy:
+  notice_body: "We track whether you're active — never what you're doing. Your apps, files, and browsing are completely private."
+  binary_only: "We only detect whether input activity occurred — we never record which applications you use, what websites you visit, or what content you view."
+```
+
+### CopyManager Implementation
+
+```python
+import yaml
+from pathlib import Path
+from typing import Optional
+
+class CopyManager:
+    """Loads and renders copy templates with variable substitution."""
+    
+    def __init__(self, copy_dir: Path, locale: str = "en"):
+        self._copy: dict = self._load_copy(copy_dir, locale)
+    
+    def get(self, key: str, **kwargs) -> str:
+        """Retrieve a copy string by dot-notation key, with variable substitution.
+        
+        Example: copy.get("greetings.home_welcome", first_name="Sarah")
+        Returns: "Welcome back, Sarah"
+        """
+        template = self._resolve_key(key)
+        return template.format(**kwargs) if kwargs else template
+    
+    def _load_copy(self, copy_dir: Path, locale: str) -> dict:
+        """Load the copy YAML file for the given locale."""
+        path = copy_dir / f"{locale}.copy.yaml"
+        with open(path) as f:
+            return yaml.safe_load(f)
+    
+    def _resolve_key(self, key: str) -> str:
+        """Navigate nested dict by dot notation (e.g., 'greetings.home_welcome')."""
+        parts = key.split(".")
+        node = self._copy
+        for part in parts:
+            node = node[part]
+        return node
+```
+
+### Tone Guidelines Summary
+
+The `tone_guidelines.md` documents the editorial voice:
+
+| Principle | Do | Don't |
+|-----------|----|----|
+| **Warm** | "Welcome back, Sarah" | "Employee ID: 4521 authenticated" |
+| **Empathetic** | "Something went wrong on our end" | "Error 500: Internal Server Error" |
+| **Supportive** | "Just a heads-up — your hours are a bit short" | "WARNING: Variance threshold exceeded" |
+| **Celebratory** | "Nice — you're all set for the day!" | "Clock-in recorded at 09:02:31 UTC" |
+| **Non-accusatory (HR)** | "Variance detected for review" | "Potential fraud identified" |
+| **Plain (privacy)** | "We track whether you're active — never what you're doing" | "The system monitors input signal presence/absence exclusively" |
+
+### Integration with Views
+
+All Gradio view files use the CopyManager for user-facing text:
+
+```python
+# src/portal/views/employee_portal.py
+class EmployeePortalView:
+    def __init__(self, copy: CopyManager, ...):
+        self._copy = copy
+    
+    def render_home(self, employee: Employee):
+        greeting = self._copy.get(
+            "greetings.home_welcome",
+            first_name=employee.full_name.split()[0]
+        )
+        # ...
+```
+
+
+## Test Data Seeding
+
+### Overview
+
+The `scripts/seed_data.py` script generates realistic, comprehensive sample data for development, demos, and testing. It populates the Central Store (or JSON fixtures) with 10 employee personas covering all system scenarios.
+
+### Script Architecture
+
+```
+scripts/
+├── seed_data.py               # Main CLI entry point
+├── seed/
+│   ├── __init__.py
+│   ├── personas.py            # 10 persona definitions with attributes
+│   ├── activity_generator.py  # Generates 4 weeks of activity log entries
+│   ├── clock_generator.py     # Generates clock-in/out entries per persona
+│   ├── exception_generator.py # Generates exceptions with varying statuses
+│   ├── audit_generator.py     # Generates realistic audit log entries
+│   └── fixture_exporter.py    # Exports data to tests/fixtures/ as JSON
+```
+
+### CLI Interface
+
+```bash
+# Generate data for a specific tenant
+python scripts/seed_data.py --tenant-id demo-tenant-001
+
+# Export to JSON fixtures only (no Central Store write)
+python scripts/seed_data.py --tenant-id test-tenant --fixtures-only
+
+# Specify a custom seed for reproducibility
+python scripts/seed_data.py --tenant-id demo-tenant-001 --seed 42
+```
+
+### Idempotency Strategy
+
+The seed script is idempotent — running it multiple times produces the same result:
+
+1. **Clear phase**: Delete all data for the specified `--tenant-id` from all sheets/tables
+2. **Generate phase**: Deterministically generate all data using a fixed random seed
+3. **Write phase**: Insert all generated records
+
+Using a fixed `random.seed()` value ensures identical data on every run.
+
+### Employee Personas (10)
+
+| # | Persona | Schedule | Pattern | Expected Flag | Key Characteristics |
+|---|---------|----------|---------|---------------|-------------------|
+| 1 | Regular Employee (Sarah) | Hybrid | Standard (9-5) | GREEN | Clean variance, consistent patterns |
+| 2 | Flexible Worker (Marcus) | Remote | Split (6-12, 18-21) | GREEN | Two work blocks, no issues |
+| 3 | Remote-First (Priya) | Remote | Standard (9-5) | GREEN | 100% home, occasional office |
+| 4 | New Hire (Alex) | Hybrid | Standard (9-5) | GREEN | Only 1 week of data (recently added) |
+| 5 | Flagged Employee (Jordan) | Hybrid | Standard (9-5) | RED | Significant variance this period |
+| 6 | HR Administrator (Rachel) | Office | Standard (9-5) | GREEN | Clocks in/out for themselves |
+| 7 | Deactivated Employee (Tom) | Hybrid | Standard (9-5) | N/A | Historical data, status=inactive |
+| 8 | Multi-Exception (Aisha) | Hybrid | Standard (9-5) | AMBER | Mix of approved, rejected, pending |
+| 9 | Location Mismatch (Ben) | Hybrid | Standard (9-5) | GREEN* | Declares office, detected home >50% |
+| 10 | Integrity Violation (Casey) | Remote | Standard (9-5) | N/A | Tampered hash chain flag |
+
+### Activity Data Generation (4 Weeks)
+
+For each persona, the generator creates activity log entries spanning 28 days:
+
+```python
+def generate_activity_for_persona(persona: Persona, weeks: int = 4) -> list[LogEntry]:
+    """Generate realistic 5-minute interval activity entries.
+    
+    Strategy per persona type:
+    - Regular: Online during 9-5 with 2-3 idle gaps (15-45 min) per day
+    - Flexible: Online in declared blocks with minimal idle
+    - Flagged: Patterns where manual hours significantly exceed tracked
+    - New Hire: Only generate data for most recent 7 days
+    - Deactivated: Full 4 weeks but deactivated_at set 2 weeks ago
+    """
+```
+
+Each entry includes:
+- Timestamp (aligned to 5-min boundary)
+- Status (Online/Idle) matching persona pattern
+- Location (office/home) matching persona work_schedule
+- Valid hash chain (except Integrity Violation persona)
+- Proper sync flag
+
+### Fixture Directory Structure
+
+```
+tests/
+├── fixtures/
+│   ├── README.md                    # Documents fixture structure and usage
+│   ├── personas.json                # All 10 employee records
+│   ├── activity_log/
+│   │   ├── regular_employee.json    # 4 weeks of activity for Sarah
+│   │   ├── flexible_worker.json     # 4 weeks for Marcus (split schedule)
+│   │   ├── flagged_employee.json    # 4 weeks for Jordan (high variance)
+│   │   └── ...                      # One file per persona
+│   ├── clock_entries/
+│   │   ├── regular_employee.json
+│   │   └── ...
+│   ├── exceptions/
+│   │   ├── multi_exception.json     # Aisha's approved/rejected/pending mix
+│   │   └── ...
+│   ├── audit_log.json               # Realistic admin actions
+│   ├── config.json                  # Tenant configuration
+│   └── expected_results/
+│       ├── reconciliation.json      # Expected variance + flags per persona
+│       └── location_mismatches.json # Expected mismatch flags
+```
+
+### Usage in Tests
+
+```python
+import json
+from pathlib import Path
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+def load_fixture(name: str) -> dict:
+    """Load a JSON fixture file for use in tests."""
+    with open(FIXTURES / name) as f:
+        return json.load(f)
+
+# In a unit test:
+def test_reconciliation_flags_correctly():
+    personas = load_fixture("personas.json")
+    activity = load_fixture("activity_log/flagged_employee.json")
+    expected = load_fixture("expected_results/reconciliation.json")
+    # ... run reconciliation, assert flags match expected
+```
+
+
+## Enhanced Accessibility
+
+### Overview
+
+Accessibility is a first-class design concern, not a checkbox. The system targets **WCAG 2.0 AA** conformance verified through automated scanning (axe-core) integrated into the CI pipeline, supplemented by manual testing for flows that require screen reader verification.
+
+### axe-core Integration in Playwright
+
+axe-core runs as part of the Playwright E2E suite, scanning every page and interactive state:
+
+```python
+# tests/e2e/conftest.py
+from axe_playwright_python.sync_playwright import Axe
+
+@pytest.fixture
+def axe(page):
+    """Provide axe-core scanner for accessibility checks."""
+    return Axe()
+
+# tests/e2e/test_accessibility.py
+def test_employee_home_accessibility(page, axe, authenticated_session):
+    page.goto("/")
+    results = axe.run(page)
+    violations = [v for v in results["violations"]
+                  if v["impact"] in ("critical", "serious")]
+    assert violations == [], f"Accessibility violations: {violations}"
+```
+
+**Pages scanned**: Every page and modal state (clock-in, exception form, HR dashboard, settings, transparency report, empty states).
+
+### CI Accessibility Gate
+
+```yaml
+# In .github/workflows/ci.yml
+accessibility:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - name: Run Playwright with axe-core
+      run: pytest tests/e2e/test_accessibility.py --browser chromium
+    # Gate: any "critical" or "serious" violation fails the job
+```
+
+**Blocking rule**: If axe-core reports ANY violation with impact level "critical" or "serious", the CI job fails and deployment is blocked. "moderate" and "minor" violations are reported as warnings but do not block.
+
+### High-Contrast Mode Detection
+
+The Portal detects and responds to the user's OS contrast preference:
+
+```css
+/* Normal mode uses Rhythm palette */
+:root {
+  --rhythm-primary: #5B8C5A;
+  --rhythm-text: #2D3436;
+  /* ... */
+}
+
+/* High contrast mode overrides */
+@media (prefers-contrast: more) {
+  :root {
+    --rhythm-primary: #3D6B3A;
+    --rhythm-text: #000000;
+    --rhythm-background: #FFFFFF;
+    --rhythm-accent: #C0392B;
+    /* All contrast ratios boosted to 7:1+ */
+  }
+  
+  /* Ensure all borders are visible */
+  button, input, .card {
+    border: 2px solid currentColor;
+  }
+}
+```
+
+### ARIA Live Regions Strategy
+
+Dynamic content updates are announced to assistive technologies via dedicated ARIA live regions:
+
+| Content Type | ARIA Setting | Region Location | Example |
+|-------------|-------------|-----------------|---------|
+| Toast confirmations | `aria-live="polite"` | Top of page (hidden container) | "You're clocked in. Have a great day!" |
+| Form validation errors | `aria-live="assertive"` | Adjacent to form | "Duration must be in 5-minute increments" |
+| Status updates | `aria-live="polite"` | Status bar region | "Exception submitted — pending review" |
+| Clock state changes | `aria-live="polite"` | Clock widget area | "Session started at 9:02 AM" |
+| Error alerts | `aria-live="assertive"` | Alert container | "Something went wrong. Try again in a moment." |
+| Badge earned | `aria-live="polite"` | Notification area | "Nice! You've earned the Great Standing badge." |
+
+**Implementation in Gradio:**
+```python
+# ARIA live region container rendered once per page
+gr.HTML(
+    '<div role="status" aria-live="polite" id="rhythm-live-region" class="sr-only"></div>'
+)
+gr.HTML(
+    '<div role="alert" aria-live="assertive" id="rhythm-alert-region" class="sr-only"></div>'
+)
+
+# JavaScript updates the live region content on dynamic events
+# (Gradio's JS callback mechanism via gr.HTML + custom JS)
+```
+
+### Focus Management Approach
+
+| Scenario | Focus Behavior |
+|----------|----------------|
+| Page load | Focus moves to main content heading (skip nav) |
+| Modal opens | Focus trapped inside modal; moves to first interactive element |
+| Modal closes | Focus returns to the element that triggered the modal |
+| Toast appears | Focus stays where it is (toast announced via live region) |
+| Form submission error | Focus moves to first invalid field |
+| Navigation | Logical tab order follows visual layout (left-to-right, top-to-bottom) |
+| Clock-in/out action | Focus stays on the action button (confirmation via live region) |
+
+**Skip Navigation Link:**
+```html
+<a href="#main-content" class="skip-link">Skip to main content</a>
+```
+
+**Focus Indicators** (visible, meets 3:1 contrast):
+```css
+:focus-visible {
+  outline: 2px solid var(--rhythm-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+```
+
+### Color Independence
+
+All color-coded information includes a secondary non-color indicator:
+
+| Status | Color | Secondary Indicator |
+|--------|-------|-------------------|
+| GREEN flag | Green (#5B8C5A) | Checkmark icon + "Clear" text label |
+| AMBER flag | Amber (#E8A838) | Triangle icon + "Review" text label |
+| RED flag | Red (#E17055) | Cross icon + "Flagged" text label |
+| Online presence | Green dot | "Online" text label visible on hover/focus |
+| Offline presence | Grey dot | "Offline" text label visible on hover/focus |
+| Exception Approved | Green | Checkmark icon + "Approved" text |
+| Exception Rejected | Red | Cross icon + "Rejected" text |
+| Exception Pending | Amber | Clock icon + "Pending" text |
+
+### Minimum Text Sizes
+
+| Content Type | Minimum Size | Rationale |
+|-------------|-------------|-----------|
+| Body text | 16px | WCAG readability for body content |
+| UI labels, buttons | 14px | Acceptable for UI chrome with good contrast |
+| Legal fine print | 12px | Only for Terms/Privacy legal text |
+| Never used | < 12px | Hard minimum — nothing smaller allowed |
+
+### Touch Targets (Mobile)
+
+All interactive elements on viewports <= 768px maintain a minimum tap target of **44 x 44 CSS pixels**:
+
+```css
+@media (max-width: 768px) {
+  button, a, input[type="checkbox"], input[type="radio"],
+  .interactive, [role="button"] {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+```
+
+### Accessibility Statement
+
+The project includes `docs/ACCESSIBILITY.md` with:
+- **Conformance level**: WCAG 2.0 AA (target)
+- **Testing methodology**: axe-core automated + Playwright keyboard tests + manual screen reader testing (NVDA on Windows, VoiceOver on macOS)
+- **Known limitations**: Listed with target fix dates
+- **Contact information**: How to report accessibility issues
+- **Third-party components**: Gradio framework accessibility notes
+- **Last review date**: Updated with each release
+
+### Dedicated E2E Accessibility Test Scenarios
+
+```python
+# tests/e2e/test_accessibility_flows.py
+
+def test_keyboard_only_clock_in(page, authenticated_session):
+    """Full clock-in flow using only Tab, Enter, Space — no mouse."""
+    # Tab to clock-in button, Enter to activate, verify confirmation
+
+def test_keyboard_only_exception(page, authenticated_session):
+    """Full exception submission using only keyboard."""
+    # Tab through form fields, select category, submit
+
+def test_keyboard_only_my_timesheet(page, authenticated_session):
+    """Navigate My Timesheet view using only keyboard."""
+    # Tab through period selector, daily breakdown, drill-down links
+
+def test_screen_reader_announcements(page, authenticated_session):
+    """Verify ARIA live regions announce dynamic content."""
+    # Clock in, verify live region content updated
+
+def test_focus_trap_modal(page, authenticated_session):
+    """Verify focus is trapped in modal and returns on close."""
+    # Open exception detail modal, Tab through, Escape, verify focus return
+
+def test_skip_nav_link(page):
+    """Verify skip-to-content link works."""
+    # Tab once from page load, verify skip link focused, Enter, verify main content focused
+```
 
 
 ## Correctness Properties
@@ -1675,9 +2521,9 @@ CREATE INDEX idx_sync_queue_created ON sync_queue(created_at);
 
 ### Property 14: Input validation correctness
 
-*For any* input value submitted to the Portal, the validator SHALL accept the value if and only if it satisfies ALL applicable constraints: email matches RFC 5322 format, duration is an integer in [5, 480] and divisible by 5, comment length is in [10, 500] characters, and category/location values are members of their defined allowed-value lists.
+*For any* input value submitted to the Portal via the detailed Exception_Form, the validator SHALL accept the value if and only if it satisfies ALL applicable constraints: email fields against RFC 5322 format, duration fields as numeric values between 5 and 480 minutes and divisible by 5, text comment fields with length in [10, 500] characters, and category/location values are members of their defined allowed-value lists. Quick toast exceptions (submitted via Tracker notification) bypass form validation — they only require a valid category selection and the idle duration is auto-calculated from actual idle time.
 
-**Validates: Requirements 7.2, 7.3, 7.6, 16.1**
+**Validates: Requirements 7.2, 7.6, 7.7, 16.1**
 
 ### Property 15: Gemini Tagger skip conditions
 
@@ -1697,11 +2543,11 @@ CREATE INDEX idx_sync_queue_created ON sync_queue(created_at);
 
 **Validates: Requirements 9.1, 9.2**
 
-### Property 18: Variance calculation and flag assignment
+### Property 18: Variance calculation and flag assignment (per review period)
 
-*For any* employee-day with manual claimed hours (M), tracked active hours (T), and total approved exception hours (E), the variance SHALL equal round(M - (T + E), 1). The flag SHALL be RED ("Potential timesheet padding") when variance < -1.0, AMBER ("Unclaimed hours detected") when variance > +1.0, and GREEN (no label) when -1.0 <= variance <= +1.0. Only exceptions with status "Approved" SHALL be included in E.
+*For any* employee and any review period (weekly/fortnightly/monthly) with manual claimed hours (M), tracked active hours within declared work schedule (T), total approved exception hours (E), and total auto-exempt idle hours (A, idle periods <= Auto_Exempt_Threshold), the variance SHALL equal round(M - (T + E + A), 1). The flag SHALL be RED ("Potential timesheet padding") when variance < -Variance_Flag_Threshold (default -3.0h per week, scaled proportionally for other periods), AMBER ("Unclaimed hours detected") when variance > +Variance_Flag_Threshold, and GREEN (no label) when within the threshold range. Only exceptions with status "Approved" SHALL be included in E. Single-day anomalies SHALL NOT trigger flags — only the aggregate period result determines the flag.
 
-**Validates: Requirements 10.1, 10.2, 10.3, 10.4, 34.6**
+**Validates: Requirements 10.1, 10.2, 10.3, 10.4, 10.10, 34.6, 55.2**
 
 ### Property 19: NTP drift detection and timestamp correction
 
@@ -1718,7 +2564,7 @@ CREATE INDEX idx_sync_queue_created ON sync_queue(created_at);
 
 ### Property 21: Reconciliation report filtering and sorting
 
-*For any* set of reconciliation records and filter criteria (employee name substring match, date range with maximum span of 90 days, flag color), the returned results SHALL contain only records matching ALL active filters simultaneously, and SHALL be sorted by date in descending order.
+*For any* set of reconciliation records and filter criteria (employee name substring match, review period selection, flag color), the returned results SHALL contain only records matching ALL active filters simultaneously, and SHALL be sorted by most recent review period first.
 
 **Validates: Requirements 10.7**
 
@@ -1772,7 +2618,7 @@ CREATE INDEX idx_sync_queue_created ON sync_queue(created_at);
 
 ### Property 30: Configurable parameter validation
 
-*For any* parameter change request, the system SHALL accept the new value if and only if it falls within the allowed range: Idle_Threshold [5-60 min], Variance_Flag_Threshold [0.5-4.0 hours], Auto_Clock_Out_Time [20:00-23:59], Heartbeat_Interval [15-120 min], Magic_Link_Expiry [5-30 min], Session_Timeout [15-120 min].
+*For any* parameter change request, the system SHALL accept the new value if and only if it falls within the allowed range: Idle_Threshold [5-60 min], Auto_Exempt_Threshold [15-120 min], Review_Period [weekly/fortnightly/monthly], Variance_Flag_Threshold [1.0-10.0 hours per review period], Auto_Clock_Out_Time [20:00-23:59], Heartbeat_Interval [15-120 min], Magic_Link_Expiry [5-30 min], Session_Timeout [15-120 min].
 
 **Validates: Requirements 22.4, 22.5**
 
@@ -1793,6 +2639,102 @@ CREATE INDEX idx_sync_queue_created ON sync_queue(created_at);
 *For any* auditable event (login, clock-in/out, exception submission, tag override, parameter change, role change), the generated Audit_Log entry SHALL contain all required fields: timestamp (UTC), actor_id, action_type, target_resource, source_ip, and session_id. The audit log SHALL be append-only with no entries modifiable or deletable.
 
 **Validates: Requirements 26.1, 26.2, 26.3**
+
+### Property 34: Auto-exempt idle threshold decision
+
+*For any* idle period with a measured duration and the configured Auto_Exempt_Threshold (default 30 minutes, range 15-120), the system SHALL treat the idle period as auto-exempt (no notification displayed, excluded from variance) if and only if the idle duration is less than or equal to the threshold. When idle duration exceeds the threshold and Focus Mode is inactive, the system SHALL trigger a toast notification.
+
+**Validates: Requirements 7.1, 7.3**
+
+### Property 35: HR self-approval prohibition
+
+*For any* exception submission where the submitter is an HR administrator, the system SHALL reject any approval action where the approver's Employee_ID equals the submitter's Employee_ID, regardless of the approver's role or permissions.
+
+**Validates: Requirements 35.5, 35.8**
+
+### Property 36: Presence indicator computation
+
+*For any* employee's last heartbeat timestamp and the current time, the HR_Dashboard SHALL display "Online" (green dot) if and only if (current_time - last_heartbeat_timestamp) is less than or equal to 10 minutes, and "Offline" (grey dot) otherwise. This value SHALL NOT be persisted, logged, or included in any variance calculation.
+
+**Validates: Requirements 52.1, 52.2**
+
+### Property 37: Self-correction notification trigger and idempotency
+
+*For any* employee, review period, and running variance computation at 75% period elapsed, the system SHALL send exactly one private self-correction notification if and only if: (a) the current date is at or past 75% of the review period, AND (b) the running variance exceeds the Variance_Flag_Threshold, AND (c) no self-correction notification has already been sent for this employee in this review period. The notification SHALL be private to the employee and not visible to HR.
+
+**Validates: Requirements 53.1, 53.4, 53.7**
+
+### Property 38: Positive reinforcement badge state
+
+*For any* sequence of completed review period results for an employee, the "Great Standing" badge SHALL be displayed if and only if the most recent N consecutive review periods all have a GREEN flag (no variance flag), where N equals the configured positive_reinforcement_threshold (default 3). When a non-GREEN period occurs, the consecutive count SHALL reset to zero and the badge SHALL be removed without any punitive message.
+
+**Validates: Requirements 54.1, 54.2, 54.3**
+
+### Property 39: Work-schedule-aware variance counting
+
+*For any* idle period timestamp and the employee's declared work schedule pattern (Standard/Split/Flexible/Custom), the idle period SHALL be counted toward variance calculations if and only if it falls within one of the employee's declared work schedule time blocks. Idle time outside declared work blocks SHALL be completely excluded. Activity recorded outside declared schedule blocks SHALL still count toward tracked active hours (not penalized).
+
+**Validates: Requirements 55.2, 55.3, 55.5**
+
+### Property 40: Focus mode recording invariant
+
+*For any* sequence of activity and idle events with Focus Mode either active or inactive, the Local_DB log entries SHALL be identical regardless of Focus Mode state — Focus Mode SHALL only suppress toast notification display. When Focus Mode is active and an idle return event occurs that would normally trigger a notification, the idle period SHALL be automatically recorded as "Unmarked Idle". Focus Mode usage SHALL NOT be reported to HR or included in any HR-visible data.
+
+**Validates: Requirements 56.4, 56.7, 56.9**
+
+### Property 41: Transparency report delivery timing
+
+*For any* review period with a configured end date and transparency_report_lead_hours (default 24), the Employee Transparency Report SHALL be delivered to the employee at a time that is at least transparency_report_lead_hours before the HR review data becomes visible in the HR_Dashboard. The HR review data SHALL NOT be accessible until after the report lead period has elapsed.
+
+**Validates: Requirements 57.1, 57.2**
+
+### Property 42: Drill-down daily breakdown aggregation consistency
+
+*For any* review period and employee, the sum of all daily breakdown values (manual_hours, tracked_hours, exception_hours, auto_exempt_hours) SHALL equal the corresponding totals in the period-level PeriodVarianceResult. The drill-down SHALL return exactly one entry per working day in the review period.
+
+**Validates: Requirements 10.9**
+
+### Property 43: Personalized greeting and notification rendering
+
+*For any* employee with a non-empty first name and any copy template containing a `{first_name}` placeholder (greetings, notifications, self-correction messages), the rendered output SHALL contain that employee's first name verbatim.
+
+**Validates: Requirements 59.5, 60.7**
+
+### Property 44: Animation duration bounded and reduced-motion compliance
+
+*For any* animation or transition definition in the Rhythm theme, its duration SHALL be less than or equal to 300ms. Additionally, when the `prefers-reduced-motion: reduce` preference is active, the effective animation and transition duration for every element SHALL be 0ms.
+
+**Validates: Requirements 59.7, 59.8**
+
+### Property 45: Externalized copy resource completeness
+
+*For any* user-facing string key referenced by a Portal view component, that key SHALL exist in the copy resource file (`en.copy.yaml` or templates) and SHALL NOT be a hardcoded string literal in the view source code.
+
+**Validates: Requirements 60.8**
+
+### Property 46: Seed data idempotency
+
+*For any* number of consecutive executions of the seed script (N >= 1) with the same `--tenant-id` and `--seed` parameters, the resulting dataset in the Central Store SHALL be identical — same record count, same field values, no duplicates.
+
+**Validates: Requirements 61.5**
+
+### Property 47: Seed data temporal coverage per persona
+
+*For any* seeded persona (except New Hire which has 7 days), the generated activity log SHALL span at least 28 calendar days with at least one entry per working day within that persona's declared work schedule pattern.
+
+**Validates: Requirements 61.3**
+
+### Property 48: ARIA live region announcement for dynamic content
+
+*For any* dynamic content change in the Portal (toast confirmation, form validation error, status update, clock state change), the corresponding ARIA live region SHALL be updated with a non-empty text string describing the change, ensuring assistive technologies announce the update.
+
+**Validates: Requirements 62.5**
+
+### Property 49: Color-coded information has secondary indicator
+
+*For any* UI element that conveys status information through color (flag colors red/amber/green, presence dots, approval status), a secondary non-color indicator (text label or icon with accessible name) SHALL be present and programmatically associated with the element.
+
+**Validates: Requirements 62.7**
 
 
 ## Error Handling
@@ -1863,7 +2805,7 @@ All subsystems implement structured error categorization per Requirement 50.14:
 ### Dual Testing Approach
 
 The project uses complementary testing strategies:
-- **Property-based tests** (Hypothesis): Verify universal invariants across all valid inputs (33 properties)
+- **Property-based tests** (Hypothesis): Verify universal invariants across all valid inputs (49 properties)
 - **Unit tests** (pytest): Verify specific examples, edge cases, integration points
 - Together they provide comprehensive coverage without over-testing any single aspect.
 
@@ -1874,7 +2816,7 @@ The project uses complementary testing strategies:
 **Configuration**:
 - Minimum 100 iterations per property test
 - Each test tagged with: `# Feature: fraud-proof-hybrid-timesheet, Property {N}: {title}`
-- All property tests execute in under 30 seconds total on CI
+- All property tests execute in under 45 seconds total on CI
 
 **Property Test Groups**:
 
@@ -1883,12 +2825,17 @@ The project uses complementary testing strategies:
 | Time Logic | 1, 2, 9, 12, 13, 26, 32 | Clock alignment, idle detection, session expiry, duration, auto-close, heartbeat, timezone |
 | Data Integrity | 5, 6, 7, 20, 29 | Hash chain, tamper detection, recovery, queue ordering, idempotency |
 | Validation | 4, 14, 15, 16, 30, 31 | Location match, input validation, Gemini skip, response validation, params, SSID format |
-| Reconciliation | 17, 18, 21 | Location mismatch, variance + flags, filtering/sorting |
-| Auth and Access | 8, 10, 22, 23 | Magic link validity, single session, RBAC, rate limiting |
+| Reconciliation | 17, 18, 21, 39, 42 | Location mismatch, periodic variance + flags, filtering/sorting, work-schedule-aware counting, drill-down aggregation |
+| Auth and Access | 8, 10, 22, 23, 35 | Magic link validity, single session, RBAC, rate limiting, HR self-approval prohibition |
 | Session State | 11 | Clock-in/out button state machine |
 | Logging | 24, 25 | JSON structure, file rotation |
 | Resilience | 3, 19, 27, 28 | Write retry, NTP drift, circuit breaker, exponential backoff |
 | Audit | 33 | Audit entry completeness and append-only invariant |
+| Notification & Wellness | 34, 37, 38, 40, 41 | Auto-exempt threshold, self-correction trigger, positive reinforcement badge, focus mode invariant, transparency report timing |
+| Presence | 36 | Online/offline indicator computation |
+| Brand & Copy | 43, 44, 45 | Personalization, animation bounds, externalized copy |
+| Seed Data | 46, 47 | Idempotency, temporal coverage |
+| Accessibility | 48, 49 | ARIA live regions, color independence |
 
 ### Unit Tests (pytest - Example-Based)
 
@@ -1901,13 +2848,40 @@ Focus on specific scenarios that property tests don't cover well:
 - Heartbeat scheduling
 - Platform-specific adapter output parsing (mock subprocess)
 - Log rotation file naming convention
+- Toast notification display (4 category buttons present)
+- Toast auto-dismiss after 5 minutes
+- Toast dismiss records "Unmarked Idle"
+- Focus Mode toggle activation/deactivation from system tray
+- Focus Mode duration presets (1h, 2h, 3h, 4h)
+- Focus Mode system tray icon change indicator
+- Focus Mode early termination
 
 **Portal Unit Tests:**
 - Magic Link email template content
 - Clock-in/out UI confirmation messages
 - Auto-close at 23:00 with correct timezone
 - Exception form category dropdown values
+- Quick toast exception → ExceptionRecord mapping
+- Detailed Exception_Form → ExceptionRecord mapping with AI tag
+- Exception form note about quick exceptions vs detailed form
 - HR dashboard flag color CSS rendering
+- HR dashboard drill-down view rendering
+- HR dashboard presence indicator (green/grey dot display)
+- HR dashboard: presence NOT stored in audit log
+- HR administrator clock-in/out for themselves (same controls as employee)
+- HR self-approval rejection error message
+- HR exception stays "Pending" when only one HR admin exists
+- Work schedule pattern CRUD (Standard, Split, Flexible, Custom)
+- Work schedule changes take effect next calendar day
+- Default work pattern applied to new employees
+- Self-correction notification message format and friendly language
+- Self-correction notification direct link to Exception_Form
+- Positive reinforcement "Great Standing" badge display/removal
+- Encouraging message after clean period
+- No leaderboard or gamification elements in wellness
+- Transparency Report content structure and friendly language
+- Transparency Report deadline messaging
+- Transparency Report: HR cannot see employee warning status
 - White-label branding application
 - Locale detection and formatting per locale
 - RTL layout activation for Arabic
@@ -1915,7 +2889,41 @@ Focus on specific scenarios that property tests don't cover well:
 - Error message format (plain language + reference code)
 - Kill switch activation/deactivation behavior
 - Incident severity auto-classification
-- Surveillance notice versioning and acknowledgement tracking
+- Surveillance notice: updated privacy text re presence indicator and app tracking
+- Privacy notice includes "binary active/idle only" statement (R58)
+- No window title/app name/URL in any stored data model
+- Rhythm theme applied: correct primary (#5B8C5A), secondary (#E8A838), background (#FAFAF7) colors
+- Default product name "Rhythm" when no white-label override configured
+- Border-radius of 8px on cards, buttons, inputs in theme
+- Inter/Nunito font-family in theme configuration
+- 8px grid spacing tokens (all multiples of 8)
+- Micro-animation durations all <= 300ms
+- prefers-reduced-motion CSS disables all animations
+- High-contrast mode overrides applied when prefers-contrast: more
+- "Great Standing" badge uses leaf/pulse icon (not trophy)
+- CopyManager renders templates with correct variable substitution
+- Copy resource file loads all expected keys without KeyError
+- Error messages follow empathy-first pattern (no raw error codes)
+- HR dashboard messages use neutral language (no accusatory tone)
+- Copy resource file separate from locale translation files
+- Seed script creates exactly 10 personas with correct attributes
+- Seed script generates 4 weeks of data (28 days) per persona
+- Seed script idempotent: second run produces identical data
+- Seed script respects --tenant-id parameter (all records scoped)
+- Seed script: "Flagged Employee" produces RED flag on reconciliation
+- Seed script: "Regular Employee" produces GREEN flag on reconciliation
+- Seed script: "Location Mismatch Employee" triggers mismatch detection
+- Seed script: "Integrity Violation Employee" has tampered hash chain
+- JSON fixtures in tests/fixtures/ match seed script output
+- axe-core integration detects intentional WCAG violation (test harness)
+- Focus indicators: 2px solid outline with >= 3:1 contrast ratio
+- Touch targets: all interactive elements >= 44x44px on mobile viewport
+- ARIA live regions update on clock-in/out, exception submit, validation error
+- Skip navigation link present and functional
+- Focus trap active in modal dialogs
+- Color-coded flags include text labels and icons (not color-only)
+- Minimum font size: body 16px, labels 14px, legal 12px
+- Accessibility statement document exists with required sections
 
 ### Integration Tests
 
@@ -1942,13 +2950,28 @@ Focus on specific scenarios that property tests don't cover well:
 1. Employee login via Magic Link -> click link -> authenticated session
 2. Clock-in (select location) -> Clock-out -> verify duration displayed
 3. Exception submission -> AI tag assigned -> appears in HR dashboard
-4. HR reconciliation review -> flags visible -> filter by color
+4. HR reconciliation review -> flags visible -> filter by color -> drill-down into daily view
 5. Employee lifecycle: Add employee -> login -> deactivate -> login blocked
 6. Auto-clock-out at 23:00 (time-mocked)
 7. Keyboard navigation (Tab through all interactive elements)
 8. Screen reader compatibility (ARIA announcements)
 9. Mobile viewport (375px width) -> all elements operable
 10. Session expiry during form -> re-login -> form data preserved
+11. HR admin clocks in/out for themselves -> appears in reconciliation view
+12. HR admin attempts to approve own exception -> rejected with error
+13. Work schedule update (Standard -> Split) -> verify takes effect next day
+14. Self-correction notification triggers at 75% period (time-mocked)
+15. Positive reinforcement badge appears after 3 clean periods (data-seeded)
+16. Transparency Report delivery -> verify employee sees before HR review
+17. Presence indicator shows green dot for recently-active employee
+18. Focus Mode: activate from system tray -> verify no toast during idle -> deactivate -> verify toast resumes
+19. Accessibility: full axe-core scan of employee home, clock-in, exception form, HR dashboard — zero critical/serious violations
+20. Accessibility: keyboard-only clock-in flow (Tab, Enter, Space — no mouse)
+21. Accessibility: keyboard-only exception submission flow
+22. Accessibility: focus trap in exception detail modal, focus return on Escape
+23. Accessibility: ARIA live regions announce clock-in confirmation and validation errors
+24. Rhythm branding: default theme colors visible, rounded corners on cards/buttons
+25. Seed data: run seed script -> verify HR dashboard shows all 10 personas with expected flags
 
 ### Architecture Boundary Tests (import-linter)
 
@@ -1980,6 +3003,7 @@ Enforced rules:
 | mypy (strict mode) | Every PR | Any type error blocks merge |
 | import-linter | Every PR | Any violation blocks merge |
 | Ruff (linting) | Every PR | Any error blocks merge |
+| axe-core (accessibility) | Every PR | Critical/Serious violations block merge |
 
 ### Test Environment Strategy
 
